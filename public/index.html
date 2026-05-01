@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title> PUBLIC ADDRESS SYSTEM</title>
+
+<script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+
+<style>
+body {
+  margin:0;
+  background:#000;
+  color:#00ffc8;
+  font-family: 'Orbitron', sans-serif;
+  overflow:hidden;
+}
+
+/* PARTICLE BACKGROUND */
+canvas#bg {
+  position:fixed;
+  top:0;
+  left:0;
+  z-index:-1;
+}
+
+/* TITLE */
+h1 {
+  text-align:center;
+  margin:10px;
+  text-shadow:0 0 20px #00ffc8;
+  animation: glitch 2s infinite;
+}
+
+/* GLITCH EFFECT */
+@keyframes glitch {
+  0% { text-shadow: 2px 0 red, -2px 0 blue; }
+  50% { text-shadow: -2px 0 red, 2px 0 blue; }
+  100% { text-shadow: 2px 0 red, -2px 0 blue; }
+}
+
+/* GRID */
+.grid {
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:15px;
+  padding:10px;
+}
+
+/* CARD */
+.card {
+  background:rgba(0,0,0,0.7);
+  border:1px solid #00ffc8;
+  border-radius:10px;
+  padding:10px;
+  box-shadow:0 0 15px #00ffc855;
+}
+
+/* EQUALIZER */
+.eq {
+  display:flex;
+  height:120px;
+  align-items:flex-end;
+  gap:3px;
+}
+.bar {
+  width:4px;
+  background:#00ffc8;
+}
+
+/* RADIAL VISUALIZER */
+#radial {
+  width:200px;
+  height:200px;
+  margin:auto;
+}
+
+/* NETWORK */
+#network {
+  height:200px;
+  background:#000;
+}
+
+/* SIGNAL */
+.signal {
+  height:10px;
+  background:linear-gradient(to right,#00ffc8,#0ea5e9);
+  width:0%;
+  transition:0.2s;
+}
+</style>
+</head>
+
+<body>
+
+<canvas id="bg"></canvas>
+
+<h1>⚡ CYBER CORE CONTROL ⚡</h1>
+
+<div class="grid">
+
+<div class="card">
+<h3>📡 STATUS</h3>
+TX: <span id="tx">OFF</span><br>
+RX: <span id="rx">0</span><br>
+Packets: <span id="pkt">0</span>
+<div class="signal" id="signal"></div>
+</div>
+
+<div class="card">
+<h3>🎧 RADIAL AUDIO</h3>
+<canvas id="radial"></canvas>
+</div>
+
+<div class="card">
+<h3>🎛 EQUALIZER</h3>
+<div class="eq" id="eq"></div>
+</div>
+
+<div class="card">
+<h3>🌐 NETWORK</h3>
+<div id="network"></div>
+</div>
+
+</div>
+
+<script>
+const socket = io();
+const audioCtx = new (window.AudioContext||window.webkitAudioContext)();
+
+// ===== PARTICLE BG =====
+const bg = document.getElementById("bg");
+const bctx = bg.getContext("2d");
+bg.width = window.innerWidth;
+bg.height = window.innerHeight;
+
+let particles = Array.from({length:100},()=>({
+  x:Math.random()*bg.width,
+  y:Math.random()*bg.height,
+  dx:Math.random()*0.5,
+  dy:Math.random()*0.5
+}));
+
+function animateBG(){
+  bctx.clearRect(0,0,bg.width,bg.height);
+  particles.forEach(p=>{
+    p.x+=p.dx; p.y+=p.dy;
+    if(p.x>bg.width) p.x=0;
+    if(p.y>bg.height) p.y=0;
+    bctx.fillStyle="#00ffc8";
+    bctx.fillRect(p.x,p.y,2,2);
+  });
+  requestAnimationFrame(animateBG);
+}
+animateBG();
+
+// ===== EQUALIZER =====
+const eq = document.getElementById("eq");
+for(let i=0;i<40;i++){
+  let bar=document.createElement("div");
+  bar.className="bar";
+  eq.appendChild(bar);
+}
+
+// ===== NETWORK =====
+const nodes=new vis.DataSet([]);
+const edges=new vis.DataSet([]);
+new vis.Network(
+  document.getElementById("network"),
+  {nodes,edges},
+  {
+    nodes:{color:"#00ffc8"},
+    edges:{color:"#00ffc8"}
+  }
+);
+
+// ===== RADIAL =====
+const rCanvas=document.getElementById("radial");
+const rctx=rCanvas.getContext("2d");
+
+// ===== STATUS =====
+let lastPackets=0;
+
+socket.on("status",(d)=>{
+  document.getElementById("tx").innerText=d.transmitter?"ON":"OFF";
+  document.getElementById("rx").innerText=d.receiverCount;
+  document.getElementById("pkt").innerText=d.packets;
+
+  let rate=d.packets-lastPackets;
+  lastPackets=d.packets;
+
+  document.getElementById("signal").style.width = Math.min(rate*5,100)+"%";
+
+  nodes.clear(); edges.clear();
+  if(d.transmitter) nodes.add({id:"tx",label:"TX"});
+  for(let i=0;i<d.receiverCount;i++){
+    let id="rx"+i;
+    nodes.add({id,label:"RX"});
+    edges.add({from:"tx",to:id});
+  }
+});
+
+// ===== AUDIO VISUAL =====
+socket.on("audio",(data)=>{
+
+  // EQUALIZER
+  let bars=document.querySelectorAll(".bar");
+  for(let i=0;i<bars.length;i++){
+    let val=data[i]||0;
+    bars[i].style.height=(val/255*120)+"px";
+  }
+
+  // RADIAL
+  rctx.clearRect(0,0,200,200);
+  let cx=100,cy=100;
+
+  for(let i=0;i<data.length;i+=5){
+    let val=data[i]/255;
+    let angle=(i/data.length)*Math.PI*2;
+    let x=cx+Math.cos(angle)*val*80;
+    let y=cy+Math.sin(angle)*val*80;
+
+    rctx.beginPath();
+    rctx.moveTo(cx,cy);
+    rctx.lineTo(x,y);
+    rctx.strokeStyle="#00ffc8";
+    rctx.stroke();
+  }
+
+  // AUDIO PLAY
+  const float32=new Float32Array(data.length);
+  for(let i=0;i<data.length;i++){
+    float32[i]=(data[i]-128)/128;
+  }
+
+  const buffer=audioCtx.createBuffer(1,float32.length,16000);
+  buffer.getChannelData(0).set(float32);
+
+  const src=audioCtx.createBufferSource();
+  src.buffer=buffer;
+  src.connect(audioCtx.destination);
+  src.start();
+});
+
+// refresh
+setInterval(()=>socket.emit("status"),1000);
+</script>
+
+</body>
+</html>

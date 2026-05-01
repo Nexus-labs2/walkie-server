@@ -6,100 +6,81 @@ const path = require("path");
 const app = express();
 const server = http.createServer(app);
 
-// ===== SOCKET.IO SETUP =====
+// ===== BASIC AUTH =====
+const USER = "admin";
+const PASS = "1234";
+
+app.use((req, res, next) => {
+  if (req.path === "/") return next();
+
+  const auth = req.headers.authorization;
+  if (!auth) {
+    res.setHeader("WWW-Authenticate", "Basic");
+    return res.status(401).send("Auth required");
+  }
+
+  const [user, pass] = Buffer.from(auth.split(" ")[1], "base64")
+    .toString()
+    .split(":");
+
+  if (user === USER && pass === PASS) next();
+  else res.status(403).send("Forbidden");
+});
+
+// ===== SOCKET.IO =====
 const io = new Server(server, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST"]
-  },
+  cors: { origin: "*" },
   transports: ["websocket", "polling"]
 });
 
-// ===== GLOBAL STATE =====
-let transmitterSocket = null;
+// ===== STATE =====
+let transmitter = null;
 let receivers = new Map();
-let messageCount = 0;
+let packets = 0;
 
-// ===== HEALTH ROUTE =====
+// ===== ROUTES =====
 app.get("/", (req, res) => {
   res.send("🚀 Walkie Server Running");
 });
 
-// ===== STATIC DASHBOARD (LATER USE) =====
 app.use("/dashboard", express.static(path.join(__dirname, "public")));
 
-// ===== SOCKET HANDLING =====
+// ===== SOCKET =====
 io.on("connection", (socket) => {
 
-  console.log(`⚡ New connection: ${socket.id}`);
+  socket.on("register", ({ type, name }) => {
+    socket.type = type;
+    socket.name = name || "device";
 
-  // ===== DEVICE REGISTRATION =====
-  socket.on("register", (data) => {
-    const { type, name } = data;
+    if (type === "transmitter") transmitter = socket;
+    if (type === "receiver") receivers.set(socket.id, socket);
 
-    socket.deviceType = type;
-    socket.deviceName = name || "Unknown";
-
-    if (type === "transmitter") {
-      transmitterSocket = socket;
-      console.log(`🎤 Transmitter connected: ${socket.deviceName}`);
-    }
-
-    if (type === "receiver") {
-      receivers.set(socket.id, socket);
-      console.log(`🔊 Receiver connected: ${socket.deviceName}`);
-    }
-
-    // Send confirmation
-    socket.emit("registered", {
-      success: true,
-      id: socket.id
-    });
+    socket.emit("registered", { ok: true });
   });
 
-  // ===== AUDIO STREAM =====
-  socket.on("audio", (buffer) => {
-    messageCount++;
+  socket.on("audio", (data) => {
+    packets++;
 
-    // Broadcast to all receivers
-    receivers.forEach((client) => {
-      client.emit("audio", buffer);
-    });
+    receivers.forEach(r => r.emit("audio", data));
 
-    // Debug log every 50 packets
-    if (messageCount % 50 === 0) {
-      console.log(`📡 Packets streamed: ${messageCount}`);
-    }
+    // Also send to dashboard clients
+    socket.broadcast.emit("audio", data);
   });
 
-  // ===== STATUS REQUEST =====
   socket.on("status", () => {
     socket.emit("status", {
-      transmitter: transmitterSocket ? transmitterSocket.id : null,
+      transmitter: transmitter ? true : false,
       receiverCount: receivers.size,
-      packets: messageCount
+      packets
     });
   });
 
-  // ===== DISCONNECT =====
   socket.on("disconnect", () => {
-    console.log(`❌ Disconnected: ${socket.id}`);
-
-    if (socket === transmitterSocket) {
-      transmitterSocket = null;
-      console.log("⚠️ Transmitter disconnected");
-    }
-
-    if (receivers.has(socket.id)) {
-      receivers.delete(socket.id);
-      console.log("⚠️ Receiver removed");
-    }
+    if (socket === transmitter) transmitter = null;
+    receivers.delete(socket.id);
   });
 });
 
-// ===== PORT CONFIG =====
+// ===== START =====
 const PORT = process.env.PORT || 3000;
-
-server.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-});
+server.listen(PORT, () => console.log("Server running:", PORT));
